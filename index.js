@@ -18,7 +18,8 @@ app.use(
     origin: [process.env.CLIENT_URL],
   }),
 );
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -42,8 +43,13 @@ async function run() {
     );
 
     app.get('/prompts', async (req, res) => {
-        const prompts = await promptCollection.find().toArray();
-        res.send(prompts);
+      const query = {};
+      if (req.query.creatorId) {
+        query.creatorId = req.query.creatorId;
+      }
+        const cursor = await promptCollection.find(query);
+        const results = await cursor.toArray();
+        res.send(results);
     }
     );
 
