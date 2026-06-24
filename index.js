@@ -198,6 +198,59 @@ async function run() {
       }
     });
 
+    app.patch("/prompts/copy/:id", async (req, res) => {
+      const result = await promptCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        {
+          $inc: {
+            copyCount: 1,
+          },
+        }
+      );
+
+      res.send(result);
+    });
+
+    const bookmarkCollection = db.collection("bookmarks");
+
+    app.post("/bookmarks", async (req, res) => {
+      const { userEmail, promptId } = req.body;
+
+      const exists = await bookmarkCollection.findOne({
+        userEmail,
+        promptId,
+      });
+
+      if (exists) {
+        return res.status(400).send({
+          message: "Already bookmarked",
+        });
+      }
+
+      const result = await bookmarkCollection.insertOne({
+        userEmail,
+        promptId,
+        createdAt: new Date(),
+      });
+
+      res.send(result);
+    });
+
+    const reportCollection = db.collection("reports");
+
+    app.post("/reports", async (req, res) => {
+      const report = {
+        ...req.body,
+        reportedAt: new Date(),
+      };
+
+      const result = await reportCollection.insertOne(
+        report
+      );
+
+      res.send(result);
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!",
