@@ -32,8 +32,14 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     await client.connect();
+
     const db = client.db("aiverse");
+
     const promptCollection = db.collection("prompts");
+    const reviewCollection = db.collection("reviews");
+    const bookmarkCollection = db.collection("bookmarks");
+    const reportCollection = db.collection("reports");
+    const usersCollection = db.collection("user");
 
     app.post('/prompts', async (req, res) => {
       const prompt = req.body;
@@ -91,8 +97,6 @@ async function run() {
       res.send(result);
     });
 
-
-    const reviewCollection = db.collection("reviews");
 
     // POST — add review
     app.post("/reviews", async (req, res) => {
@@ -211,8 +215,6 @@ async function run() {
       res.send(result);
     });
 
-    const bookmarkCollection = db.collection("bookmarks");
-
     app.post("/bookmarks", async (req, res) => {
       const { userEmail, promptId } = req.body;
 
@@ -236,8 +238,6 @@ async function run() {
       res.send(result);
     });
 
-    const reportCollection = db.collection("reports");
-
     app.post("/reports", async (req, res) => {
       const report = {
         ...req.body,
@@ -247,6 +247,79 @@ async function run() {
       const result = await reportCollection.insertOne(
         report
       );
+
+      res.send(result);
+    });
+
+    app.get("/admin/stats", async (req, res) => {
+      try {
+        const totalUsers = await usersCollection.countDocuments();
+
+        const totalPrompts =
+          await promptCollection.countDocuments();
+
+        const totalReviews =
+          await reviewCollection.countDocuments();
+
+        const totalReports =
+          await reportCollection.countDocuments();
+
+        const copyResult = await promptCollection
+          .aggregate([
+            {
+              $group: {
+                _id: null,
+                totalCopies: {
+                  $sum: { $ifNull: ["$copyCount", 0] },
+                },
+              },
+            },
+          ])
+          .toArray();
+
+        const totalCopies =
+          copyResult[0]?.totalCopies || 0;
+
+        res.send({
+          totalUsers,
+          totalPrompts,
+          totalReviews,
+          totalReports,
+          totalCopies,
+        });
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .send({ message: "Failed to fetch stats" });
+      }
+    });
+
+    app.get("/users", async (req, res) => {
+      const users = await usersCollection.find({}).toArray();
+      res.send(users);
+    });
+
+    app.patch("/users/:id/role", async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body;
+
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: { role },
+        }
+      );
+
+      res.send(result);
+    });
+
+    app.delete("/users/:id", async (req, res) => {
+      const { id } = req.params;
+
+      const result = await usersCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
 
       res.send(result);
     });
