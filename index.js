@@ -152,6 +152,21 @@ async function run() {
       res.json(reviews);
     });
 
+    app.get("/customer-reviews", async (req, res) => {
+      try {
+        const reviews = await reviewCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .limit(6)
+          .toArray();
+
+        res.send(reviews);
+      } catch (error) {
+        console.log(error);
+        res.status(500).send({ error: "Failed to fetch reviews" });
+      }
+    });
+
     // GET — reviews by a specific user (for My Reviews dashboard page)
     app.get("/reviews/user/:email", async (req, res) => {
       const { email } = req.params;
