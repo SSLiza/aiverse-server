@@ -169,6 +169,20 @@ async function run() {
       res.json(result);
     });
 
+    app.get("/featured-prompts", async (req, res) => {
+      try {
+        const prompts = await promptCollection
+          .find({})
+          .sort({ copyCount: -1 }) // trending based on copies
+          .limit(6)
+          .toArray();
+
+        res.send(prompts);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch featured prompts" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!",
