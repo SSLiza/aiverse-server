@@ -91,10 +91,29 @@ async function run() {
 
     app.post('/prompts', async (req, res) => {
       const prompt = req.body;
-      const result = await promptCollection.insertOne(prompt);
-      res.send(result);
-    }
-    );
+
+      try {
+        // Check user plan in database
+        const user = await usersCollection.findOne({ email: prompt.creatorEmail });
+        const isPremium = user?.plan === "premium";
+
+        if (!isPremium) {
+          // Count user's current prompts
+          const count = await promptCollection.countDocuments({ creatorEmail: prompt.creatorEmail });
+          if (count >= 3) {
+            return res.status(400).send({
+              message: "Free users can only create up to 3 prompts. Please upgrade to Premium."
+            });
+          }
+        }
+
+        const result = await promptCollection.insertOne(prompt);
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to create prompt" });
+      }
+    });
     app.post('/premiums', async (req, res) => {
       const data = req.body;
       const premiumInfo = {
@@ -116,15 +135,80 @@ async function run() {
     );
 
     app.get('/prompts', async (req, res) => {
-      const query = {};
-      if (req.query.creatorId) {
-        query.creatorId = req.query.creatorId;
+      try {
+        const query = {};
+
+        // Filter by creator if requested, otherwise public marketplace only returns approved prompts
+        if (req.query.creatorId) {
+          query.creatorId = req.query.creatorId;
+        } else if (req.query.creatorEmail) {
+          query.creatorEmail = req.query.creatorEmail;
+        } else {
+          query.status = "approved";
+        }
+
+        // Search: checks title, tags, and aiTool
+        if (req.query.search) {
+          const searchRegex = new RegExp(req.query.search, 'i');
+          query.$or = [
+            { title: searchRegex },
+            { aiTool: searchRegex },
+            { tags: searchRegex }
+          ];
+        }
+
+        // Filters
+        if (req.query.category) {
+          query.category = req.query.category;
+        }
+        if (req.query.aiTool) {
+          query.aiTool = req.query.aiTool;
+        }
+        if (req.query.difficulty) {
+          query.difficulty = req.query.difficulty;
+        }
+
+        // Sorting
+        let sortOption = { createdAt: -1 };
+        if (req.query.sort === "mostPopular") {
+          sortOption = { avgRating: -1 };
+        } else if (req.query.sort === "mostCopied") {
+          sortOption = { copyCount: -1 };
+        } else if (req.query.sort === "latest") {
+          sortOption = { createdAt: -1 };
+        }
+
+        // Determine if we need to paginate (checks for page or limit parameters)
+        if (req.query.page || req.query.limit) {
+          const page = parseInt(req.query.page) || 1;
+          const limit = parseInt(req.query.limit) || 6;
+          const skip = (page - 1) * limit;
+
+          const totalCount = await promptCollection.countDocuments(query);
+          const cursor = promptCollection.find(query)
+            .sort(sortOption)
+            .skip(skip)
+            .limit(limit);
+
+          const prompts = await cursor.toArray();
+
+          return res.send({
+            data: prompts,
+            totalCount,
+            totalPages: Math.ceil(totalCount / limit),
+            currentPage: page
+          });
+        }
+
+        // Fallback: return raw array without pagination
+        const cursor = promptCollection.find(query).sort(sortOption);
+        const results = await cursor.toArray();
+        res.send(results);
+      } catch (error) {
+        console.error("Error in GET /prompts:", error);
+        res.status(500).send({ message: "Failed to fetch prompts" });
       }
-      const cursor = await promptCollection.find(query);
-      const results = await cursor.toArray();
-      res.send(results);
-    }
-    );
+    });
 
     app.get("/prompts/:id", async (req, res) => {
       const id = req.params.id;
