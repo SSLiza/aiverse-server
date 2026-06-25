@@ -402,6 +402,159 @@ async function run() {
       res.send(result);
     });
 
+    // Toggle Bookmark (if exists, remove. if not, add)
+    app.post("/bookmarks/toggle", async (req, res) => {
+      const { userEmail, promptId } = req.body;
+      if (!userEmail || !promptId) {
+        return res.status(400).send({ message: "Email and Prompt ID are required" });
+      }
+
+      const exists = await bookmarkCollection.findOne({ userEmail, promptId });
+      if (exists) {
+        await bookmarkCollection.deleteOne({ userEmail, promptId });
+        return res.send({ status: "removed", message: "Bookmark removed" });
+      } else {
+        const result = await bookmarkCollection.insertOne({
+          userEmail,
+          promptId,
+          createdAt: new Date(),
+        });
+        return res.send({ status: "added", message: "Prompt bookmarked" });
+      }
+    });
+
+    // Check Bookmark Status
+    app.get("/bookmarks/check", async (req, res) => {
+      const { userEmail, promptId } = req.query;
+      if (!userEmail || !promptId) {
+        return res.status(400).send({ message: "Email and Prompt ID are required" });
+      }
+
+      const exists = await bookmarkCollection.findOne({ userEmail, promptId });
+      res.send({ bookmarked: !!exists });
+    });
+
+    // Get User's Bookmarked Prompts
+    app.get("/bookmarks/user/:email", async (req, res) => {
+      try {
+        const { email } = req.params;
+        const bookmarks = await bookmarkCollection.find({ userEmail: email }).toArray();
+        const promptIds = bookmarks.map((b) => {
+          try {
+            return new ObjectId(b.promptId);
+          } catch {
+            return null;
+          }
+        }).filter(Boolean);
+
+        const prompts = await promptCollection.find({ _id: { $in: promptIds } }).toArray();
+        res.send(prompts);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to fetch saved prompts" });
+      }
+    });
+
+    // Get Creator Analytics & Stats (aggregates prompt copies and bookmarks via $lookup)
+    app.get("/creator/stats/:email", async (req, res) => {
+      try {
+        const { email } = req.params;
+
+        const prompts = await promptCollection.find({ creatorEmail: email }).toArray();
+
+        // 1. Total Prompts & Total Copies Aggregation
+        const promptStats = await promptCollection.aggregate([
+          { $match: { creatorEmail: email } },
+          {
+            $group: {
+              _id: "$creatorEmail",
+              totalPrompts: { $sum: 1 },
+              totalCopies: { $sum: { $ifNull: ["$copyCount", 0] } }
+            }
+          }
+        ]).toArray();
+
+        // 2. Total Bookmarks Aggregation using $lookup
+        const bookmarkStats = await promptCollection.aggregate([
+          { $match: { creatorEmail: email } },
+          {
+            $addFields: {
+              idStr: { $toString: "$_id" }
+            }
+          },
+          {
+            $lookup: {
+              from: "bookmarks",
+              localField: "idStr",
+              foreignField: "promptId",
+              as: "bookmarksInfo"
+            }
+          },
+          {
+            $project: {
+              bookmarkCount: { $size: "$bookmarksInfo" }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              totalBookmarks: { $sum: "$bookmarkCount" }
+            }
+          }
+        ]).toArray();
+
+        res.send({
+          totalPrompts: promptStats[0]?.totalPrompts || 0,
+          totalCopies: promptStats[0]?.totalCopies || 0,
+          totalBookmarks: bookmarkStats[0]?.totalBookmarks || 0,
+          prompts
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to fetch creator stats" });
+      }
+    });
+
+    // Warn Creator
+    app.post("/admin/reports/warn-creator", async (req, res) => {
+      try {
+        const { creatorEmail, message, promptId } = req.body;
+        if (!creatorEmail) {
+          return res.status(400).send({ message: "Creator email required" });
+        }
+
+        await usersCollection.updateOne(
+          { email: creatorEmail },
+          {
+            $inc: { warningCount: 1 },
+            $push: {
+              warnings: {
+                message: message || "General violation of platform guidelines",
+                promptId,
+                date: new Date()
+              }
+            }
+          }
+        );
+
+        res.send({ success: true, message: "Warning sent successfully" });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to warn creator" });
+      }
+    });
+
+    // Get Admin Payments List
+    app.get("/admin/payments", async (req, res) => {
+      try {
+        const payments = await premiumCollection.find({}).sort({ createdAt: -1 }).toArray();
+        res.send(payments);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to fetch payments data" });
+      }
+    });
+
     app.get("/admin/stats", async (req, res) => {
       try {
         const totalUsers = await usersCollection.countDocuments();
@@ -485,12 +638,16 @@ async function run() {
     });
 
     app.patch("/admin/prompts/:id/status", async (req, res) => {
-      const { status } = req.body;
+      const { status, rejectionFeedback } = req.body;
+      const updateData = { status };
+      if (rejectionFeedback !== undefined) {
+        updateData.rejectionFeedback = rejectionFeedback;
+      }
 
       const result = await promptCollection.updateOne(
         { _id: new ObjectId(req.params.id) },
         {
-          $set: { status },
+          $set: updateData,
         }
       );
 
