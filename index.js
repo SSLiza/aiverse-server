@@ -5,7 +5,10 @@ const express = require("express");
 const dontenv = require("dotenv");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const jwt = require("jsonwebtoken");
 dontenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET || "aiverse-super-secret-jsonwebtoken-key";
 
 const uri = process.env.MONGODB_URI;
 
@@ -41,6 +44,50 @@ async function run() {
     const reportCollection = db.collection("reports");
     const usersCollection = db.collection("user");
     const premiumCollection = db.collection("premiums");
+
+    // verifyJWT middleware
+    const verifyJWT = (req, res, next) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+      const token = authHeader.split(" ")[1];
+      jwt.verify(token, JWT_SECRET, (err, decoded) => {
+        if (err) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
+        req.decoded = decoded;
+        next();
+      });
+    };
+
+    // verifyAdmin middleware
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded?.email;
+      const user = await usersCollection.findOne({ email });
+      if (user?.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
+    // verifyCreator middleware
+    const verifyCreator = async (req, res, next) => {
+      const email = req.decoded?.email;
+      const user = await usersCollection.findOne({ email });
+      if (user?.role !== "creator" && user?.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
+    // JWT signing route
+    app.post("/jwt", async (req, res) => {
+      const user = req.body;
+      const token = jwt.sign(user, JWT_SECRET, { expiresIn: "7d" });
+      res.send({ token });
+    });
+
 
     app.post('/prompts', async (req, res) => {
       const prompt = req.body;
