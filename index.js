@@ -40,11 +40,31 @@ async function run() {
     const bookmarkCollection = db.collection("bookmarks");
     const reportCollection = db.collection("reports");
     const usersCollection = db.collection("user");
+    const premiumCollection = db.collection("premiums");
 
     app.post('/prompts', async (req, res) => {
       const prompt = req.body;
       const result = await promptCollection.insertOne(prompt);
       res.send(result);
+    }
+    );
+    app.post('/premiums', async (req, res) => {
+      const data = req.body;
+      const premiumInfo = {
+        ...data,
+        createdAt: new Date()
+      }
+      const result = await premiumCollection.insertOne(premiumInfo);
+      const filter = { email: data.email};
+
+      const updateDocument = {
+        $set: {
+          plan: 'premium',
+        }
+      }
+
+      const updateResult = await usersCollection.updateOne(filter,updateDocument)
+      res.send(updateResult);
     }
     );
 
@@ -322,6 +342,93 @@ async function run() {
       });
 
       res.send(result);
+    });
+
+    app.get("/admin/prompts", async (req, res) => {
+      const prompts = await promptCollection
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(prompts);
+    });
+
+    app.patch("/admin/prompts/:id/status", async (req, res) => {
+      const { status } = req.body;
+
+      const result = await promptCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        {
+          $set: { status },
+        }
+      );
+
+      res.send(result);
+    });
+
+    app.patch("/admin/prompts/:id/featured", async (req, res) => {
+      const result = await promptCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        [
+          {
+            $set: {
+              featured: {
+                $not: "$featured",
+              },
+            },
+          },
+        ]
+      );
+
+      res.send(result);
+    });
+
+    app.get("/admin/reports", async (req, res) => {
+  try {
+    const reports = await reportCollection.find().toArray();
+
+    const enrichedReports = await Promise.all(
+      reports.map(async (report) => {
+        const prompt = await promptCollection.findOne({
+          _id: new ObjectId(report.promptId),
+        });
+
+        return {
+          ...report,
+          promptTitle: prompt?.title || "Deleted Prompt",
+          creatorEmail: prompt?.creatorEmail || "Unknown",
+        };
+      })
+    );
+
+    res.send(enrichedReports);
+  } catch (error) {
+    console.log(error);
+    res.status(500).send({
+      message: "Failed to fetch reports",
+    });
+  }
+});
+
+    app.delete("/admin/reports/:id", async (req, res) => {
+      const result = await reportCollection.deleteOne({
+        _id: new ObjectId(req.params.id),
+      });
+
+      res.send(result);
+    });
+
+
+    app.delete("/admin/reports/prompt/:promptId", async (req, res) => {
+      const promptResult = await promptCollection.deleteOne({
+        _id: new ObjectId(req.params.promptId),
+      });
+
+      await reportCollection.deleteMany({
+        promptId: req.params.promptId,
+      });
+
+      res.send(promptResult);
     });
 
     await client.db("admin").command({ ping: 1 });
