@@ -8,7 +8,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const jwt = require("jsonwebtoken");
 dontenv.config();
 
-const JWT_SECRET = process.env.JWT_SECRET || "aiverse-super-secret-jsonwebtoken-key";
+const JWT_SECRET = process.env.JWT_SECRET;
 
 const uri = process.env.MONGODB_URI;
 
@@ -121,7 +121,7 @@ async function run() {
         createdAt: new Date()
       }
       const result = await premiumCollection.insertOne(premiumInfo);
-      const filter = { email: data.email};
+      const filter = { email: data.email };
 
       const updateDocument = {
         $set: {
@@ -129,7 +129,7 @@ async function run() {
         }
       }
 
-      const updateResult = await usersCollection.updateOne(filter,updateDocument)
+      const updateResult = await usersCollection.updateOne(filter, updateDocument)
       res.send(updateResult);
     }
     );
@@ -138,13 +138,14 @@ async function run() {
       try {
         const query = {};
 
-        // Filter by creator if requested, otherwise public marketplace only returns approved prompts
+        // Filter by creator if requested, otherwise public marketplace only returns approved public prompts
         if (req.query.creatorId) {
           query.creatorId = req.query.creatorId;
         } else if (req.query.creatorEmail) {
           query.creatorEmail = req.query.creatorEmail;
         } else {
           query.status = "approved";
+          // query.visibility = "Public";
         }
 
         // Search: checks title, tags, and aiTool
@@ -207,6 +208,37 @@ async function run() {
       } catch (error) {
         console.error("Error in GET /prompts:", error);
         res.status(500).send({ message: "Failed to fetch prompts" });
+      }
+    });
+
+    app.patch("/admin/prompts/:id/status", async (req, res) => {
+      try {
+        console.log("ID:", req.params.id);
+        console.log("BODY:", req.body);
+
+        const { status, rejectionFeedback } = req.body;
+
+        const updateData = { status };
+
+        if (rejectionFeedback !== undefined) {
+          updateData.rejectionFeedback = rejectionFeedback;
+        }
+
+        const result = await promptCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          {
+            $set: updateData,
+          }
+        );
+
+        console.log(result);
+
+        res.send(result);
+      } catch (error) {
+        console.log(error);
+        res.status(500).send({
+          message: error.message,
+        });
       }
     });
 
@@ -297,25 +329,167 @@ async function run() {
       res.status(201).json({ insertedId: result.insertedId });
     });
 
-    // GET — all reviews for a prompt
+    // GET — all reviews for a prompt, with optional pagination and review-existence checks
     app.get("/reviews/:promptId", async (req, res) => {
       const { promptId } = req.params;
+
+      if (req.query.email) {
+        const existingReview = await reviewCollection.findOne({
+          promptId,
+          email: req.query.email,
+        });
+        return res.json({ alreadyReviewed: !!existingReview });
+      }
+
+      const page = parseInt(req.query.page, 10) || 1;
+      const limit = parseInt(req.query.limit, 10) || 3;
+      const skip = (page - 1) * limit;
+
+      const totalCount = await reviewCollection.countDocuments({ promptId });
       const reviews = await reviewCollection
         .find({ promptId })
         .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
         .toArray();
-      res.json(reviews);
+
+      // Compute overall rating statistics (average and counts per star level)
+      const stats = await reviewCollection.aggregate([
+        { $match: { promptId } },
+        {
+          $group: {
+            _id: null,
+            avgRating: { $avg: "$rating" },
+            star5Count: { $sum: { $cond: [{ $eq: ["$rating", 5] }, 1, 0] } },
+            star4Count: { $sum: { $cond: [{ $eq: ["$rating", 4] }, 1, 0] } },
+            star3Count: { $sum: { $cond: [{ $eq: ["$rating", 3] }, 1, 0] } },
+            star2Count: { $sum: { $cond: [{ $eq: ["$rating", 2] }, 1, 0] } },
+            star1Count: { $sum: { $cond: [{ $eq: ["$rating", 1] }, 1, 0] } },
+          },
+        },
+      ]).toArray();
+
+      const ratingStats = stats[0] || {
+        avgRating: 0,
+        star5Count: 0,
+        star4Count: 0,
+        star3Count: 0,
+        star2Count: 0,
+        star1Count: 0,
+      };
+
+      res.json({
+        data: reviews,
+        totalCount,
+        totalPages: Math.ceil(totalCount / limit),
+        currentPage: page,
+        ratingStats: {
+          avgRating: parseFloat(Number(ratingStats.avgRating || 0).toFixed(1)),
+          starCounts: {
+            5: ratingStats.star5Count,
+            4: ratingStats.star4Count,
+            3: ratingStats.star3Count,
+            2: ratingStats.star2Count,
+            1: ratingStats.star1Count,
+          },
+        },
+      });
+    });
+    app.get("/top-creators", async (req, res) => {
+      try {
+        const page = parseInt(req.query.page, 10) || 1;
+        const limit = parseInt(req.query.limit, 10) || 4;
+        const skip = (page - 1) * limit;
+
+        const totalCount = await usersCollection.countDocuments({});
+        const totalPages = Math.ceil(totalCount / limit);
+
+        const creators = await usersCollection
+          .aggregate([
+            {
+              $lookup: {
+                from: "prompts",
+                let: { userIdStr: { $toString: "$_id" } },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: {
+                        $or: [
+                          { $eq: ["$creatorId", "$$userIdStr"] },
+                          { $eq: [{ $toString: { $ifNull: ["$creator", ""] } }, "$$userIdStr"] },
+                        ],
+                      },
+                    },
+                  },
+                ],
+                as: "prompts",
+              },
+            },
+            {
+              $addFields: {
+                totalPrompts: { $size: "$prompts" },
+                totalCopies: {
+                  $sum: { $ifNull: ["$prompts.copyCount", 0] },
+                },
+              },
+            },
+            {
+              $sort: {
+                totalCopies: -1,
+              },
+            },
+            {
+              $skip: skip,
+            },
+            {
+              $limit: limit,
+            },
+            {
+              $project: {
+                name: 1,
+                username: 1,
+                image: 1,
+                totalPrompts: 1,
+                totalCopies: 1,
+              },
+            },
+          ])
+          .toArray();
+
+        res.json({
+          data: creators,
+          totalCount,
+          totalPages,
+          currentPage: page,
+        });
+      } catch (error) {
+        console.error("Error in GET /top-creators:", error);
+        res.status(500).send({ message: "Failed to fetch top creators" });
+      }
     });
 
     app.get("/customer-reviews", async (req, res) => {
       try {
+        const page = parseInt(req.query.page, 10) || 1;
+        const limit = parseInt(req.query.limit, 10) || 3;
+        const skip = (page - 1) * limit;
+
+        const totalCount = await reviewCollection.countDocuments({});
+        const totalPages = Math.ceil(totalCount / limit);
+
         const reviews = await reviewCollection
           .find({})
           .sort({ createdAt: -1 })
-          .limit(6)
+          .skip(skip)
+          .limit(limit)
           .toArray();
 
-        res.send(reviews);
+        res.json({
+          data: reviews,
+          totalCount,
+          totalPages,
+          currentPage: page,
+        });
       } catch (error) {
         console.log(error);
         res.status(500).send({ error: "Failed to fetch reviews" });
@@ -544,6 +718,30 @@ async function run() {
       }
     });
 
+    app.get("/reviews/user/:email", async (req, res) => {
+      const { email } = req.params;
+
+      const reviews = await reviewCollection
+        .find({ email })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      const enrichedReviews = await Promise.all(
+        reviews.map(async (review) => {
+          const prompt = await promptCollection.findOne({
+            _id: new ObjectId(review.promptId),
+          });
+
+          return {
+            ...review,
+            promptTitle: prompt?.title || "Deleted Prompt",
+          };
+        })
+      );
+
+      res.send(enrichedReviews);
+    });
+
     // Get Admin Payments List
     app.get("/admin/payments", async (req, res) => {
       try {
@@ -568,6 +766,9 @@ async function run() {
         const totalReports =
           await reportCollection.countDocuments();
 
+        const totalBookmarks =
+          await bookmarkCollection.countDocuments();
+
         const copyResult = await promptCollection
           .aggregate([
             {
@@ -590,6 +791,7 @@ async function run() {
           totalReviews,
           totalReports,
           totalCopies,
+          totalBookmarks
         });
       } catch (error) {
         console.error(error);
@@ -672,31 +874,31 @@ async function run() {
     });
 
     app.get("/admin/reports", async (req, res) => {
-  try {
-    const reports = await reportCollection.find().toArray();
+      try {
+        const reports = await reportCollection.find().toArray();
 
-    const enrichedReports = await Promise.all(
-      reports.map(async (report) => {
-        const prompt = await promptCollection.findOne({
-          _id: new ObjectId(report.promptId),
+        const enrichedReports = await Promise.all(
+          reports.map(async (report) => {
+            const prompt = await promptCollection.findOne({
+              _id: new ObjectId(report.promptId),
+            });
+
+            return {
+              ...report,
+              promptTitle: prompt?.title || "Deleted Prompt",
+              creatorEmail: prompt?.creatorEmail || "Unknown",
+            };
+          })
+        );
+
+        res.send(enrichedReports);
+      } catch (error) {
+        console.log(error);
+        res.status(500).send({
+          message: "Failed to fetch reports",
         });
-
-        return {
-          ...report,
-          promptTitle: prompt?.title || "Deleted Prompt",
-          creatorEmail: prompt?.creatorEmail || "Unknown",
-        };
-      })
-    );
-
-    res.send(enrichedReports);
-  } catch (error) {
-    console.log(error);
-    res.status(500).send({
-      message: "Failed to fetch reports",
+      }
     });
-  }
-});
 
     app.delete("/admin/reports/:id", async (req, res) => {
       const result = await reportCollection.deleteOne({
