@@ -32,905 +32,1045 @@ const client = new MongoClient(uri, {
   },
 });
 
-async function run() {
-  try {
-    await client.connect();
+// async function run() {
+//   try {
+//     await client.connect();
+client.connect(() => {
+  console.log('connecting to mongodb')
+}).catch(console.dir)
 
-    const db = client.db("aiverse");
+const db = client.db("aiverse");
 
-    const promptCollection = db.collection("prompts");
-    const reviewCollection = db.collection("reviews");
-    const bookmarkCollection = db.collection("bookmarks");
-    const reportCollection = db.collection("reports");
-    const usersCollection = db.collection("user");
-    const premiumCollection = db.collection("premiums");
+const promptCollection = db.collection("prompts");
+const reviewCollection = db.collection("reviews");
+const bookmarkCollection = db.collection("bookmarks");
+const reportCollection = db.collection("reports");
+const usersCollection = db.collection("user");
+const premiumCollection = db.collection("premiums");
 
-    // verifyJWT middleware
-    const verifyJWT = (req, res, next) => {
-      const authHeader = req.headers.authorization;
-      if (!authHeader) {
-        return res.status(401).send({ message: "unauthorized access" });
-      }
-      const token = authHeader.split(" ")[1];
-      jwt.verify(token, JWT_SECRET, (err, decoded) => {
-        if (err) {
-          return res.status(403).send({ message: "forbidden access" });
-        }
-        req.decoded = decoded;
-        next();
-      });
-    };
-
-    // verifyAdmin middleware
-    const verifyAdmin = async (req, res, next) => {
-      const email = req.decoded?.email;
-      const user = await usersCollection.findOne({ email });
-      if (user?.role !== "admin") {
-        return res.status(403).send({ message: "forbidden access" });
-      }
-      next();
-    };
-
-    // verifyCreator middleware
-    const verifyCreator = async (req, res, next) => {
-      const email = req.decoded?.email;
-      const user = await usersCollection.findOne({ email });
-      if (user?.role !== "creator" && user?.role !== "admin") {
-        return res.status(403).send({ message: "forbidden access" });
-      }
-      next();
-    };
-
-    // JWT signing route
-    app.post("/jwt", async (req, res) => {
-      const user = req.body;
-      const token = jwt.sign(user, JWT_SECRET, { expiresIn: "7d" });
-      res.send({ token });
-    });
-
-
-    app.post('/prompts', async (req, res) => {
-      const prompt = req.body;
-
-      try {
-        // Check user plan in database
-        const user = await usersCollection.findOne({ email: prompt.creatorEmail });
-        const isPremium = user?.plan === "premium";
-
-        if (!isPremium) {
-          // Count user's current prompts
-          const count = await promptCollection.countDocuments({ creatorEmail: prompt.creatorEmail });
-          if (count >= 3) {
-            return res.status(400).send({
-              message: "Free users can only create up to 3 prompts. Please upgrade to Premium."
-            });
-          }
-        }
-
-        const result = await promptCollection.insertOne(prompt);
-        res.send(result);
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Failed to create prompt" });
-      }
-    });
-    app.post('/premiums', async (req, res) => {
-      const data = req.body;
-      const premiumInfo = {
-        ...data,
-        createdAt: new Date()
-      }
-      const result = await premiumCollection.insertOne(premiumInfo);
-      const filter = { email: data.email };
-
-      const updateDocument = {
-        $set: {
-          plan: 'premium',
-        }
-      }
-
-      const updateResult = await usersCollection.updateOne(filter, updateDocument)
-      res.send(updateResult);
+// verifyJWT middleware
+const verifyJWT = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+  const token = authHeader.split(" ")[1];
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(403).send({ message: "forbidden access" });
     }
-    );
+    req.decoded = decoded;
+    next();
+  });
+};
 
-    app.get('/prompts', async (req, res) => {
-      try {
-        const query = {};
+// verifyAdmin middleware
+const verifyAdmin = async (req, res, next) => {
+  const email = req.decoded?.email;
+  const user = await usersCollection.findOne({ email });
+  if (user?.role !== "admin") {
+    return res.status(403).send({ message: "forbidden access" });
+  }
+  next();
+};
 
-        // Filter by creator if requested, otherwise public marketplace only returns approved public prompts
-        if (req.query.creatorId) {
-          query.creatorId = req.query.creatorId;
-        } else if (req.query.creatorEmail) {
-          query.creatorEmail = req.query.creatorEmail;
-        } else {
-          query.status = "approved";
-          // query.visibility = "Public";
-        }
+// verifyCreator middleware
+const verifyCreator = async (req, res, next) => {
+  const email = req.decoded?.email;
+  const user = await usersCollection.findOne({ email });
+  if (user?.role !== "creator" && user?.role !== "admin") {
+    return res.status(403).send({ message: "forbidden access" });
+  }
+  next();
+};
 
-        // Search: checks title, tags, and aiTool
-        if (req.query.search) {
-          const searchRegex = new RegExp(req.query.search, 'i');
-          query.$or = [
-            { title: searchRegex },
-            { aiTool: searchRegex },
-            { tags: searchRegex }
-          ];
-        }
+// JWT signing route
+app.post("/jwt", async (req, res) => {
+  const user = req.body;
+  const token = jwt.sign(user, JWT_SECRET, { expiresIn: "7d" });
+  res.send({ token });
+});
 
-        // Filters
-        if (req.query.category) {
-          query.category = req.query.category;
-        }
-        if (req.query.aiTool) {
-          query.aiTool = req.query.aiTool;
-        }
-        if (req.query.difficulty) {
-          query.difficulty = req.query.difficulty;
-        }
 
-        // Sorting
-        let sortOption = { createdAt: -1 };
-        if (req.query.sort === "mostPopular") {
-          sortOption = { avgRating: -1 };
-        } else if (req.query.sort === "mostCopied") {
-          sortOption = { copyCount: -1 };
-        } else if (req.query.sort === "latest") {
-          sortOption = { createdAt: -1 };
-        }
+app.post('/prompts', async (req, res) => {
+  const prompt = req.body;
 
-        // Determine if we need to paginate (checks for page or limit parameters)
-        if (req.query.page || req.query.limit) {
-          const page = parseInt(req.query.page) || 1;
-          const limit = parseInt(req.query.limit) || 6;
-          const skip = (page - 1) * limit;
+  try {
+    // Check user plan in database
+    const user = await usersCollection.findOne({ email: prompt.creatorEmail });
+    const isPremium = user?.plan === "premium";
 
-          const totalCount = await promptCollection.countDocuments(query);
-          const cursor = promptCollection.find(query)
-            .sort(sortOption)
-            .skip(skip)
-            .limit(limit);
-
-          const prompts = await cursor.toArray();
-
-          return res.send({
-            data: prompts,
-            totalCount,
-            totalPages: Math.ceil(totalCount / limit),
-            currentPage: page
-          });
-        }
-
-        // Fallback: return raw array without pagination
-        const cursor = promptCollection.find(query).sort(sortOption);
-        const results = await cursor.toArray();
-        res.send(results);
-      } catch (error) {
-        console.error("Error in GET /prompts:", error);
-        res.status(500).send({ message: "Failed to fetch prompts" });
-      }
-    });
-
-    app.patch("/admin/prompts/:id/status", async (req, res) => {
-      try {
-        console.log("ID:", req.params.id);
-        console.log("BODY:", req.body);
-
-        const { status, rejectionFeedback } = req.body;
-
-        const updateData = { status };
-
-        if (rejectionFeedback !== undefined) {
-          updateData.rejectionFeedback = rejectionFeedback;
-        }
-
-        const result = await promptCollection.updateOne(
-          { _id: new ObjectId(req.params.id) },
-          {
-            $set: updateData,
-          }
-        );
-
-        console.log(result);
-
-        res.send(result);
-      } catch (error) {
-        console.log(error);
-        res.status(500).send({
-          message: error.message,
+    if (!isPremium) {
+      // Count user's current prompts
+      const count = await promptCollection.countDocuments({ creatorEmail: prompt.creatorEmail });
+      if (count >= 3) {
+        return res.status(400).send({
+          message: "Free users can only create up to 3 prompts. Please upgrade to Premium."
         });
       }
-    });
+    }
 
-    app.get("/prompts/:id", async (req, res) => {
-      const id = req.params.id;
+    const result = await promptCollection.insertOne(prompt);
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to create prompt" });
+  }
+});
+app.post('/premiums', async (req, res) => {
+  const data = req.body;
+  const premiumInfo = {
+    ...data,
+    createdAt: new Date()
+  }
+  const result = await premiumCollection.insertOne(premiumInfo);
+  const filter = { email: data.email };
 
-      const prompt = await promptCollection.findOne({
-        _id: new ObjectId(id),
-      });
+  const updateDocument = {
+    $set: {
+      plan: 'premium',
+    }
+  }
 
-      if (!prompt) {
-        return res.status(404).send({ message: "Prompt not found" });
-      }
+  const updateResult = await usersCollection.updateOne(filter, updateDocument)
+  res.send(updateResult);
+}
+);
 
-      res.send(prompt);
-    });
+app.get('/prompts', async (req, res) => {
+  try {
+    const query = {};
 
-    app.put("/prompts/:id", async (req, res) => {
-      const id = req.params.id;
-      const { _id, ...updatedPrompt } = req.body;
+    // Filter by creator if requested, otherwise public marketplace only returns approved public prompts
+    if (req.query.creatorId) {
+      query.creatorId = req.query.creatorId;
+    } else if (req.query.creatorEmail) {
+      query.creatorEmail = req.query.creatorEmail;
+    } else {
+      query.status = "approved";
+      // query.visibility = "Public";
+    }
 
-      const result = await promptCollection.updateOne(
-        { _id: new ObjectId(id) },
-        {
-          $set: updatedPrompt,
-        }
-      );
+    // Search: checks title, tags, and aiTool
+    if (req.query.search) {
+      const searchRegex = new RegExp(req.query.search, 'i');
+      query.$or = [
+        { title: searchRegex },
+        { aiTool: searchRegex },
+        { tags: searchRegex }
+      ];
+    }
 
-      res.send(result);
-    });
+    // Filters
+    if (req.query.category) {
+      query.category = req.query.category;
+    }
+    if (req.query.aiTool) {
+      query.aiTool = req.query.aiTool;
+    }
+    if (req.query.difficulty) {
+      query.difficulty = req.query.difficulty;
+    }
 
-    app.delete("/prompts/:id", async (req, res) => {
-      const id = req.params.id;
+    // Sorting
+    let sortOption = { createdAt: -1 };
+    if (req.query.sort === "mostPopular") {
+      sortOption = { avgRating: -1 };
+    } else if (req.query.sort === "mostCopied") {
+      sortOption = { copyCount: -1 };
+    } else if (req.query.sort === "latest") {
+      sortOption = { createdAt: -1 };
+    }
 
-      const result = await promptCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-
-      res.send(result);
-    });
-
-
-    // POST — add review
-    app.post("/reviews", async (req, res) => {
-      const { promptId, name, email, rating, comment } = req.body;
-
-      // prevent duplicate review from same email on same prompt
-      const existing = await reviewCollection.findOne({ promptId, email });
-      if (existing) {
-        return res.status(400).json({ message: "You already reviewed this prompt" });
-      }
-
-      const review = {
-        promptId,
-        name,
-        email,
-        rating: Number(rating),
-        comment,
-        createdAt: new Date(),
-      };
-
-      const result = await reviewCollection.insertOne(review);
-
-      // update avgRating & totalReviews on the prompt using aggregation
-      const agg = await reviewCollection.aggregate([
-        { $match: { promptId } },
-        {
-          $group: {
-            _id: "$promptId",
-            avgRating: { $avg: "$rating" },
-            totalReviews: { $sum: 1 },
-          },
-        },
-      ]).toArray();
-
-      if (agg.length > 0) {
-        await promptCollection.updateOne(
-          { _id: new ObjectId(promptId) },
-          {
-            $set: {
-              avgRating: parseFloat(agg[0].avgRating.toFixed(1)),
-              totalReviews: agg[0].totalReviews,
-            },
-          }
-        );
-      }
-
-      res.status(201).json({ insertedId: result.insertedId });
-    });
-
-    // GET — all reviews for a prompt, with optional pagination and review-existence checks
-    app.get("/reviews/:promptId", async (req, res) => {
-      const { promptId } = req.params;
-
-      if (req.query.email) {
-        const existingReview = await reviewCollection.findOne({
-          promptId,
-          email: req.query.email,
-        });
-        return res.json({ alreadyReviewed: !!existingReview });
-      }
-
-      const page = parseInt(req.query.page, 10) || 1;
-      const limit = parseInt(req.query.limit, 10) || 3;
+    // Determine if we need to paginate (checks for page or limit parameters)
+    if (req.query.page || req.query.limit) {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 6;
       const skip = (page - 1) * limit;
 
-      const totalCount = await reviewCollection.countDocuments({ promptId });
-      const reviews = await reviewCollection
-        .find({ promptId })
-        .sort({ createdAt: -1 })
+      const totalCount = await promptCollection.countDocuments(query);
+      const cursor = promptCollection.find(query)
+        .sort(sortOption)
         .skip(skip)
-        .limit(limit)
-        .toArray();
+        .limit(limit);
 
-      // Compute overall rating statistics (average and counts per star level)
-      const stats = await reviewCollection.aggregate([
-        { $match: { promptId } },
+      const prompts = await cursor.toArray();
+
+      return res.send({
+        data: prompts,
+        totalCount,
+        totalPages: Math.ceil(totalCount / limit),
+        currentPage: page
+      });
+    }
+
+    // Fallback: return raw array without pagination
+    const cursor = promptCollection.find(query).sort(sortOption);
+    const results = await cursor.toArray();
+    res.send(results);
+  } catch (error) {
+    console.error("Error in GET /prompts:", error);
+    res.status(500).send({ message: "Failed to fetch prompts" });
+  }
+});
+
+app.patch("/admin/prompts/:id/status", async (req, res) => {
+  try {
+    console.log("ID:", req.params.id);
+    console.log("BODY:", req.body);
+
+    const { status, rejectionFeedback } = req.body;
+
+    const updateData = { status };
+
+    if (rejectionFeedback !== undefined) {
+      updateData.rejectionFeedback = rejectionFeedback;
+    }
+
+    const result = await promptCollection.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      {
+        $set: updateData,
+      }
+    );
+
+    console.log(result);
+
+    res.send(result);
+  } catch (error) {
+    console.log(error);
+    res.status(500).send({
+      message: error.message,
+    });
+  }
+});
+
+app.get("/prompts/:id", async (req, res) => {
+  const id = req.params.id;
+
+  const prompt = await promptCollection.findOne({
+    _id: new ObjectId(id),
+  });
+
+  if (!prompt) {
+    return res.status(404).send({ message: "Prompt not found" });
+  }
+
+  res.send(prompt);
+});
+
+app.put("/prompts/:id", async (req, res) => {
+  const id = req.params.id;
+  const { _id, ...updatedPrompt } = req.body;
+
+  const result = await promptCollection.updateOne(
+    { _id: new ObjectId(id) },
+    {
+      $set: updatedPrompt,
+    }
+  );
+
+  res.send(result);
+});
+
+app.delete("/prompts/:id", async (req, res) => {
+  const id = req.params.id;
+
+  const result = await promptCollection.deleteOne({
+    _id: new ObjectId(id),
+  });
+
+  res.send(result);
+});
+
+
+// POST — add review
+app.post("/reviews", async (req, res) => {
+  const { promptId, name, email, rating, comment } = req.body;
+
+  // prevent duplicate review from same email on same prompt
+  const existing = await reviewCollection.findOne({ promptId, email });
+  if (existing) {
+    return res.status(400).json({ message: "You already reviewed this prompt" });
+  }
+
+  const review = {
+    promptId,
+    name,
+    email,
+    rating: Number(rating),
+    comment,
+    createdAt: new Date(),
+  };
+
+  const result = await reviewCollection.insertOne(review);
+
+  // update avgRating & totalReviews on the prompt using aggregation
+  const agg = await reviewCollection.aggregate([
+    { $match: { promptId } },
+    {
+      $group: {
+        _id: "$promptId",
+        avgRating: { $avg: "$rating" },
+        totalReviews: { $sum: 1 },
+      },
+    },
+  ]).toArray();
+
+  if (agg.length > 0) {
+    await promptCollection.updateOne(
+      { _id: new ObjectId(promptId) },
+      {
+        $set: {
+          avgRating: parseFloat(agg[0].avgRating.toFixed(1)),
+          totalReviews: agg[0].totalReviews,
+        },
+      }
+    );
+  }
+
+  res.status(201).json({ insertedId: result.insertedId });
+});
+
+// GET — all reviews for a prompt, with optional pagination and review-existence checks
+app.get("/reviews/:promptId", async (req, res) => {
+  const { promptId } = req.params;
+
+  if (req.query.email) {
+    const existingReview = await reviewCollection.findOne({
+      promptId,
+      email: req.query.email,
+    });
+    return res.json({ alreadyReviewed: !!existingReview });
+  }
+
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 3;
+  const skip = (page - 1) * limit;
+
+  const totalCount = await reviewCollection.countDocuments({ promptId });
+  const reviews = await reviewCollection
+    .find({ promptId })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .toArray();
+
+  // Compute overall rating statistics (average and counts per star level)
+  const stats = await reviewCollection.aggregate([
+    { $match: { promptId } },
+    {
+      $group: {
+        _id: null,
+        avgRating: { $avg: "$rating" },
+        star5Count: { $sum: { $cond: [{ $eq: ["$rating", 5] }, 1, 0] } },
+        star4Count: { $sum: { $cond: [{ $eq: ["$rating", 4] }, 1, 0] } },
+        star3Count: { $sum: { $cond: [{ $eq: ["$rating", 3] }, 1, 0] } },
+        star2Count: { $sum: { $cond: [{ $eq: ["$rating", 2] }, 1, 0] } },
+        star1Count: { $sum: { $cond: [{ $eq: ["$rating", 1] }, 1, 0] } },
+      },
+    },
+  ]).toArray();
+
+  const ratingStats = stats[0] || {
+    avgRating: 0,
+    star5Count: 0,
+    star4Count: 0,
+    star3Count: 0,
+    star2Count: 0,
+    star1Count: 0,
+  };
+
+  res.json({
+    data: reviews,
+    totalCount,
+    totalPages: Math.ceil(totalCount / limit),
+    currentPage: page,
+    ratingStats: {
+      avgRating: parseFloat(Number(ratingStats.avgRating || 0).toFixed(1)),
+      starCounts: {
+        5: ratingStats.star5Count,
+        4: ratingStats.star4Count,
+        3: ratingStats.star3Count,
+        2: ratingStats.star2Count,
+        1: ratingStats.star1Count,
+      },
+    },
+  });
+});
+app.get("/top-creators", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 4;
+    const skip = (page - 1) * limit;
+
+    // Count only creators
+    const totalCount = await usersCollection.countDocuments({
+      role: "creator",
+    });
+
+    const totalPages = Math.ceil(totalCount / limit);
+
+    const creators = await usersCollection
+      .aggregate([
+        // Only users with creator role
+        {
+          $match: {
+            role: "creator",
+          },
+        },
+
+        {
+          $lookup: {
+            from: "prompts",
+            let: { userIdStr: { $toString: "$_id" } },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $or: [
+                      { $eq: ["$creatorId", "$$userIdStr"] },
+                      {
+                        $eq: [
+                          { $toString: { $ifNull: ["$creator", ""] } },
+                          "$$userIdStr",
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+            as: "prompts",
+          },
+        },
+
+        {
+          $addFields: {
+            totalPrompts: { $size: "$prompts" },
+            totalCopies: {
+              $sum: { $ifNull: ["$prompts.copyCount", 0] },
+            },
+          },
+        },
+
+        {
+          $sort: {
+            totalCopies: -1,
+          },
+        },
+
+        { $skip: skip },
+        { $limit: limit },
+
+        {
+          $project: {
+            name: 1,
+            username: 1,
+            image: 1,
+            role: 1,
+            totalPrompts: 1,
+            totalCopies: 1,
+          },
+        },
+      ])
+      .toArray();
+
+    res.json({
+      data: creators,
+      totalCount,
+      totalPages,
+      currentPage: page,
+    });
+  } catch (error) {
+    console.error("Error in GET /top-creators:", error);
+    res.status(500).send({
+      message: "Failed to fetch top creators",
+    });
+  }
+});
+
+app.get("/customer-reviews", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 3;
+    const skip = (page - 1) * limit;
+
+    const totalCount = await reviewCollection.countDocuments({});
+    const totalPages = Math.ceil(totalCount / limit);
+
+    const reviews = await reviewCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    res.json({
+      data: reviews,
+      totalCount,
+      totalPages,
+      currentPage: page,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).send({ error: "Failed to fetch reviews" });
+  }
+});
+
+// GET — reviews by a specific user (for My Reviews dashboard page)
+app.get("/reviews/user/:email", async (req, res) => {
+  const { email } = req.params;
+  const reviews = await reviewCollection
+    .find({ email })
+    .sort({ createdAt: -1 })
+    .toArray();
+  res.json(reviews);
+});
+
+// DELETE — user deletes their own review
+app.delete("/reviews/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const review = await reviewCollection.findOne({ _id: new ObjectId(id) });
+    if (!review) {
+      return res.status(404).send({ message: "Review not found" });
+    }
+    const promptId = review.promptId;
+    const result = await reviewCollection.deleteOne({ _id: new ObjectId(id) });
+
+    // update avgRating & totalReviews on the prompt using aggregation
+    const agg = await reviewCollection.aggregate([
+      { $match: { promptId } },
+      {
+        $group: {
+          _id: "$promptId",
+          avgRating: { $avg: "$rating" },
+          totalReviews: { $sum: 1 },
+        },
+      },
+    ]).toArray();
+
+    if (agg.length > 0) {
+      await promptCollection.updateOne(
+        { _id: new ObjectId(promptId) },
+        {
+          $set: {
+            avgRating: parseFloat(agg[0].avgRating.toFixed(1)),
+            totalReviews: agg[0].totalReviews,
+          },
+        }
+      );
+    } else {
+      await promptCollection.updateOne(
+        { _id: new ObjectId(promptId) },
+        {
+          $set: {
+            avgRating: 0,
+            totalReviews: 0,
+          },
+        }
+      );
+    }
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/featured-prompts", async (req, res) => {
+  try {
+    const prompts = await promptCollection
+      .find({})
+      .sort({ copyCount: -1 }) // trending based on copies
+      .limit(6)
+      .toArray();
+
+    res.send(prompts);
+  } catch (error) {
+    res.status(500).send({ error: "Failed to fetch featured prompts" });
+  }
+});
+
+app.patch("/prompts/copy/:id", async (req, res) => {
+  const result = await promptCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    {
+      $inc: {
+        copyCount: 1,
+      },
+    }
+  );
+
+  res.send(result);
+});
+
+app.post("/bookmarks", async (req, res) => {
+  const { userEmail, promptId } = req.body;
+
+  const exists = await bookmarkCollection.findOne({
+    userEmail,
+    promptId,
+  });
+
+  if (exists) {
+    return res.status(400).send({
+      message: "Already bookmarked",
+    });
+  }
+
+  const result = await bookmarkCollection.insertOne({
+    userEmail,
+    promptId,
+    createdAt: new Date(),
+  });
+
+  res.send(result);
+});
+
+app.post("/reports", async (req, res) => {
+  const report = {
+    ...req.body,
+    reportedAt: new Date(),
+  };
+
+  const result = await reportCollection.insertOne(
+    report
+  );
+
+  res.send(result);
+});
+
+// Toggle Bookmark (if exists, remove. if not, add)
+app.post("/bookmarks/toggle", async (req, res) => {
+  const { userEmail, promptId } = req.body;
+  if (!userEmail || !promptId) {
+    return res.status(400).send({ message: "Email and Prompt ID are required" });
+  }
+
+  const exists = await bookmarkCollection.findOne({ userEmail, promptId });
+  if (exists) {
+    await bookmarkCollection.deleteOne({ userEmail, promptId });
+    return res.send({ status: "removed", message: "Bookmark removed" });
+  } else {
+    const result = await bookmarkCollection.insertOne({
+      userEmail,
+      promptId,
+      createdAt: new Date(),
+    });
+    return res.send({ status: "added", message: "Prompt bookmarked" });
+  }
+});
+
+// Check Bookmark Status
+app.get("/bookmarks/check", async (req, res) => {
+  const { userEmail, promptId } = req.query;
+  if (!userEmail || !promptId) {
+    return res.status(400).send({ message: "Email and Prompt ID are required" });
+  }
+
+  const exists = await bookmarkCollection.findOne({ userEmail, promptId });
+  res.send({ bookmarked: !!exists });
+});
+
+// Get User's Bookmarked Prompts
+app.get("/bookmarks/user/:email", async (req, res) => {
+  try {
+    const { email } = req.params;
+    const bookmarks = await bookmarkCollection.find({ userEmail: email }).toArray();
+    const promptIds = bookmarks.map((b) => {
+      try {
+        return new ObjectId(b.promptId);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+
+    const prompts = await promptCollection.find({ _id: { $in: promptIds } }).toArray();
+    res.send(prompts);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to fetch saved prompts" });
+  }
+});
+
+// Get Creator Analytics & Stats (aggregates prompt copies and bookmarks via $lookup)
+app.get("/creator/stats/:email", async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    const prompts = await promptCollection.find({ creatorEmail: email }).toArray();
+
+    // 1. Total Prompts & Total Copies Aggregation
+    const promptStats = await promptCollection.aggregate([
+      { $match: { creatorEmail: email } },
+      {
+        $group: {
+          _id: "$creatorEmail",
+          totalPrompts: { $sum: 1 },
+          totalCopies: { $sum: { $ifNull: ["$copyCount", 0] } }
+        }
+      }
+    ]).toArray();
+
+    // 2. Total Bookmarks Aggregation using $lookup
+    const bookmarkStats = await promptCollection.aggregate([
+      { $match: { creatorEmail: email } },
+      {
+        $addFields: {
+          idStr: { $toString: "$_id" }
+        }
+      },
+      {
+        $lookup: {
+          from: "bookmarks",
+          localField: "idStr",
+          foreignField: "promptId",
+          as: "bookmarksInfo"
+        }
+      },
+      {
+        $project: {
+          bookmarkCount: { $size: "$bookmarksInfo" }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalBookmarks: { $sum: "$bookmarkCount" }
+        }
+      }
+    ]).toArray();
+
+    // 3. Total Reviews Aggregation using $lookup
+    const reviewStats = await promptCollection.aggregate([
+      { $match: { creatorEmail: email } },
+      {
+        $addFields: {
+          idStr: { $toString: "$_id" }
+        }
+      },
+      {
+        $lookup: {
+          from: "reviews",
+          localField: "idStr",
+          foreignField: "promptId",
+          as: "reviewsInfo"
+        }
+      },
+      {
+        $project: {
+          reviewCount: { $size: "$reviewsInfo" }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalReviews: { $sum: "$reviewCount" }
+        }
+      }
+    ]).toArray();
+
+    // Calculate Monthly Prompts & Category Distribution from the fetched prompts
+    const monthlyMap = {};
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    
+    prompts.forEach((p) => {
+      if (!p.createdAt) return;
+      const date = new Date(p.createdAt);
+      if (isNaN(date.getTime())) return;
+      const year = date.getFullYear();
+      const month = date.getMonth();
+      const key = `${year}-${month.toString().padStart(2, '0')}`;
+      if (!monthlyMap[key]) {
+        monthlyMap[key] = {
+          month: `${monthNames[month]} ${year}`,
+          prompts: 0,
+          year,
+          monthIndex: month
+        };
+      }
+      monthlyMap[key].prompts++;
+    });
+
+    const monthlyPrompts = Object.values(monthlyMap).sort((a, b) => {
+      if (a.year !== b.year) return a.year - b.year;
+      return a.monthIndex - b.monthIndex;
+    }).map(item => ({
+      month: item.month,
+      prompts: item.prompts
+    }));
+
+    const categoryMap = {};
+    prompts.forEach((p) => {
+      const cat = p.category || "Other";
+      categoryMap[cat] = (categoryMap[cat] || 0) + 1;
+    });
+
+    const categoryDistribution = Object.entries(categoryMap).map(([name, value]) => ({
+      name,
+      value
+    }));
+
+    res.send({
+      totalPrompts: promptStats[0]?.totalPrompts || 0,
+      totalCopies: promptStats[0]?.totalCopies || 0,
+      totalBookmarks: bookmarkStats[0]?.totalBookmarks || 0,
+      totalReviews: reviewStats[0]?.totalReviews || 0,
+      monthlyPrompts,
+      categoryDistribution,
+      prompts
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to fetch creator stats" });
+  }
+});
+
+// Warn Creator
+app.post("/admin/reports/warn-creator", async (req, res) => {
+  try {
+    const { creatorEmail, message, promptId } = req.body;
+    if (!creatorEmail) {
+      return res.status(400).send({ message: "Creator email required" });
+    }
+
+    await usersCollection.updateOne(
+      { email: creatorEmail },
+      {
+        $inc: { warningCount: 1 },
+        $push: {
+          warnings: {
+            message: message || "General violation of platform guidelines",
+            promptId,
+            date: new Date()
+          }
+        }
+      }
+    );
+
+    res.send({ success: true, message: "Warning sent successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to warn creator" });
+  }
+});
+
+app.get("/reviews/user/:email", async (req, res) => {
+  const { email } = req.params;
+
+  const reviews = await reviewCollection
+    .find({ email })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  const enrichedReviews = await Promise.all(
+    reviews.map(async (review) => {
+      const prompt = await promptCollection.findOne({
+        _id: new ObjectId(review.promptId),
+      });
+
+      return {
+        ...review,
+        promptTitle: prompt?.title || "Deleted Prompt",
+      };
+    })
+  );
+
+  res.send(enrichedReviews);
+});
+
+// Get Admin Payments List
+app.get("/admin/payments", async (req, res) => {
+  try {
+    const payments = await premiumCollection.find({}).sort({ createdAt: -1 }).toArray();
+    res.send(payments);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Failed to fetch payments data" });
+  }
+});
+
+app.get("/admin/stats", async (req, res) => {
+  try {
+    const totalUsers = await usersCollection.countDocuments();
+
+    const totalPrompts =
+      await promptCollection.countDocuments();
+
+    const totalReviews =
+      await reviewCollection.countDocuments();
+
+    const totalReports =
+      await reportCollection.countDocuments();
+
+    const totalBookmarks =
+      await bookmarkCollection.countDocuments();
+
+    const copyResult = await promptCollection
+      .aggregate([
         {
           $group: {
             _id: null,
-            avgRating: { $avg: "$rating" },
-            star5Count: { $sum: { $cond: [{ $eq: ["$rating", 5] }, 1, 0] } },
-            star4Count: { $sum: { $cond: [{ $eq: ["$rating", 4] }, 1, 0] } },
-            star3Count: { $sum: { $cond: [{ $eq: ["$rating", 3] }, 1, 0] } },
-            star2Count: { $sum: { $cond: [{ $eq: ["$rating", 2] }, 1, 0] } },
-            star1Count: { $sum: { $cond: [{ $eq: ["$rating", 1] }, 1, 0] } },
+            totalCopies: {
+              $sum: { $ifNull: ["$copyCount", 0] },
+            },
           },
         },
-      ]).toArray();
+      ])
+      .toArray();
 
-      const ratingStats = stats[0] || {
-        avgRating: 0,
-        star5Count: 0,
-        star4Count: 0,
-        star3Count: 0,
-        star2Count: 0,
-        star1Count: 0,
-      };
+    const totalCopies =
+      copyResult[0]?.totalCopies || 0;
 
-      res.json({
-        data: reviews,
-        totalCount,
-        totalPages: Math.ceil(totalCount / limit),
-        currentPage: page,
-        ratingStats: {
-          avgRating: parseFloat(Number(ratingStats.avgRating || 0).toFixed(1)),
-          starCounts: {
-            5: ratingStats.star5Count,
-            4: ratingStats.star4Count,
-            3: ratingStats.star3Count,
-            2: ratingStats.star2Count,
-            1: ratingStats.star1Count,
-          },
-        },
-      });
+    res.send({
+      totalUsers,
+      totalPrompts,
+      totalReviews,
+      totalReports,
+      totalCopies,
+      totalBookmarks
     });
-    app.get("/top-creators", async (req, res) => {
-      try {
-        const page = parseInt(req.query.page, 10) || 1;
-        const limit = parseInt(req.query.limit, 10) || 4;
-        const skip = (page - 1) * limit;
-
-        const totalCount = await usersCollection.countDocuments({});
-        const totalPages = Math.ceil(totalCount / limit);
-
-        const creators = await usersCollection
-          .aggregate([
-            {
-              $lookup: {
-                from: "prompts",
-                let: { userIdStr: { $toString: "$_id" } },
-                pipeline: [
-                  {
-                    $match: {
-                      $expr: {
-                        $or: [
-                          { $eq: ["$creatorId", "$$userIdStr"] },
-                          { $eq: [{ $toString: { $ifNull: ["$creator", ""] } }, "$$userIdStr"] },
-                        ],
-                      },
-                    },
-                  },
-                ],
-                as: "prompts",
-              },
-            },
-            {
-              $addFields: {
-                totalPrompts: { $size: "$prompts" },
-                totalCopies: {
-                  $sum: { $ifNull: ["$prompts.copyCount", 0] },
-                },
-              },
-            },
-            {
-              $sort: {
-                totalCopies: -1,
-              },
-            },
-            {
-              $skip: skip,
-            },
-            {
-              $limit: limit,
-            },
-            {
-              $project: {
-                name: 1,
-                username: 1,
-                image: 1,
-                totalPrompts: 1,
-                totalCopies: 1,
-              },
-            },
-          ])
-          .toArray();
-
-        res.json({
-          data: creators,
-          totalCount,
-          totalPages,
-          currentPage: page,
-        });
-      } catch (error) {
-        console.error("Error in GET /top-creators:", error);
-        res.status(500).send({ message: "Failed to fetch top creators" });
-      }
-    });
-
-    app.get("/customer-reviews", async (req, res) => {
-      try {
-        const page = parseInt(req.query.page, 10) || 1;
-        const limit = parseInt(req.query.limit, 10) || 3;
-        const skip = (page - 1) * limit;
-
-        const totalCount = await reviewCollection.countDocuments({});
-        const totalPages = Math.ceil(totalCount / limit);
-
-        const reviews = await reviewCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(limit)
-          .toArray();
-
-        res.json({
-          data: reviews,
-          totalCount,
-          totalPages,
-          currentPage: page,
-        });
-      } catch (error) {
-        console.log(error);
-        res.status(500).send({ error: "Failed to fetch reviews" });
-      }
-    });
-
-    // GET — reviews by a specific user (for My Reviews dashboard page)
-    app.get("/reviews/user/:email", async (req, res) => {
-      const { email } = req.params;
-      const reviews = await reviewCollection
-        .find({ email })
-        .sort({ createdAt: -1 })
-        .toArray();
-      res.json(reviews);
-    });
-
-    // DELETE — user deletes their own review
-    app.delete("/reviews/:id", async (req, res) => {
-      const { id } = req.params;
-      const result = await reviewCollection.deleteOne({ _id: new ObjectId(id) });
-      res.json(result);
-    });
-
-    app.get("/featured-prompts", async (req, res) => {
-      try {
-        const prompts = await promptCollection
-          .find({})
-          .sort({ copyCount: -1 }) // trending based on copies
-          .limit(6)
-          .toArray();
-
-        res.send(prompts);
-      } catch (error) {
-        res.status(500).send({ error: "Failed to fetch featured prompts" });
-      }
-    });
-
-    app.patch("/prompts/copy/:id", async (req, res) => {
-      const result = await promptCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        {
-          $inc: {
-            copyCount: 1,
-          },
-        }
-      );
-
-      res.send(result);
-    });
-
-    app.post("/bookmarks", async (req, res) => {
-      const { userEmail, promptId } = req.body;
-
-      const exists = await bookmarkCollection.findOne({
-        userEmail,
-        promptId,
-      });
-
-      if (exists) {
-        return res.status(400).send({
-          message: "Already bookmarked",
-        });
-      }
-
-      const result = await bookmarkCollection.insertOne({
-        userEmail,
-        promptId,
-        createdAt: new Date(),
-      });
-
-      res.send(result);
-    });
-
-    app.post("/reports", async (req, res) => {
-      const report = {
-        ...req.body,
-        reportedAt: new Date(),
-      };
-
-      const result = await reportCollection.insertOne(
-        report
-      );
-
-      res.send(result);
-    });
-
-    // Toggle Bookmark (if exists, remove. if not, add)
-    app.post("/bookmarks/toggle", async (req, res) => {
-      const { userEmail, promptId } = req.body;
-      if (!userEmail || !promptId) {
-        return res.status(400).send({ message: "Email and Prompt ID are required" });
-      }
-
-      const exists = await bookmarkCollection.findOne({ userEmail, promptId });
-      if (exists) {
-        await bookmarkCollection.deleteOne({ userEmail, promptId });
-        return res.send({ status: "removed", message: "Bookmark removed" });
-      } else {
-        const result = await bookmarkCollection.insertOne({
-          userEmail,
-          promptId,
-          createdAt: new Date(),
-        });
-        return res.send({ status: "added", message: "Prompt bookmarked" });
-      }
-    });
-
-    // Check Bookmark Status
-    app.get("/bookmarks/check", async (req, res) => {
-      const { userEmail, promptId } = req.query;
-      if (!userEmail || !promptId) {
-        return res.status(400).send({ message: "Email and Prompt ID are required" });
-      }
-
-      const exists = await bookmarkCollection.findOne({ userEmail, promptId });
-      res.send({ bookmarked: !!exists });
-    });
-
-    // Get User's Bookmarked Prompts
-    app.get("/bookmarks/user/:email", async (req, res) => {
-      try {
-        const { email } = req.params;
-        const bookmarks = await bookmarkCollection.find({ userEmail: email }).toArray();
-        const promptIds = bookmarks.map((b) => {
-          try {
-            return new ObjectId(b.promptId);
-          } catch {
-            return null;
-          }
-        }).filter(Boolean);
-
-        const prompts = await promptCollection.find({ _id: { $in: promptIds } }).toArray();
-        res.send(prompts);
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Failed to fetch saved prompts" });
-      }
-    });
-
-    // Get Creator Analytics & Stats (aggregates prompt copies and bookmarks via $lookup)
-    app.get("/creator/stats/:email", async (req, res) => {
-      try {
-        const { email } = req.params;
-
-        const prompts = await promptCollection.find({ creatorEmail: email }).toArray();
-
-        // 1. Total Prompts & Total Copies Aggregation
-        const promptStats = await promptCollection.aggregate([
-          { $match: { creatorEmail: email } },
-          {
-            $group: {
-              _id: "$creatorEmail",
-              totalPrompts: { $sum: 1 },
-              totalCopies: { $sum: { $ifNull: ["$copyCount", 0] } }
-            }
-          }
-        ]).toArray();
-
-        // 2. Total Bookmarks Aggregation using $lookup
-        const bookmarkStats = await promptCollection.aggregate([
-          { $match: { creatorEmail: email } },
-          {
-            $addFields: {
-              idStr: { $toString: "$_id" }
-            }
-          },
-          {
-            $lookup: {
-              from: "bookmarks",
-              localField: "idStr",
-              foreignField: "promptId",
-              as: "bookmarksInfo"
-            }
-          },
-          {
-            $project: {
-              bookmarkCount: { $size: "$bookmarksInfo" }
-            }
-          },
-          {
-            $group: {
-              _id: null,
-              totalBookmarks: { $sum: "$bookmarkCount" }
-            }
-          }
-        ]).toArray();
-
-        res.send({
-          totalPrompts: promptStats[0]?.totalPrompts || 0,
-          totalCopies: promptStats[0]?.totalCopies || 0,
-          totalBookmarks: bookmarkStats[0]?.totalBookmarks || 0,
-          prompts
-        });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Failed to fetch creator stats" });
-      }
-    });
-
-    // Warn Creator
-    app.post("/admin/reports/warn-creator", async (req, res) => {
-      try {
-        const { creatorEmail, message, promptId } = req.body;
-        if (!creatorEmail) {
-          return res.status(400).send({ message: "Creator email required" });
-        }
-
-        await usersCollection.updateOne(
-          { email: creatorEmail },
-          {
-            $inc: { warningCount: 1 },
-            $push: {
-              warnings: {
-                message: message || "General violation of platform guidelines",
-                promptId,
-                date: new Date()
-              }
-            }
-          }
-        );
-
-        res.send({ success: true, message: "Warning sent successfully" });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Failed to warn creator" });
-      }
-    });
-
-    app.get("/reviews/user/:email", async (req, res) => {
-      const { email } = req.params;
-
-      const reviews = await reviewCollection
-        .find({ email })
-        .sort({ createdAt: -1 })
-        .toArray();
-
-      const enrichedReviews = await Promise.all(
-        reviews.map(async (review) => {
-          const prompt = await promptCollection.findOne({
-            _id: new ObjectId(review.promptId),
-          });
-
-          return {
-            ...review,
-            promptTitle: prompt?.title || "Deleted Prompt",
-          };
-        })
-      );
-
-      res.send(enrichedReviews);
-    });
-
-    // Get Admin Payments List
-    app.get("/admin/payments", async (req, res) => {
-      try {
-        const payments = await premiumCollection.find({}).sort({ createdAt: -1 }).toArray();
-        res.send(payments);
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Failed to fetch payments data" });
-      }
-    });
-
-    app.get("/admin/stats", async (req, res) => {
-      try {
-        const totalUsers = await usersCollection.countDocuments();
-
-        const totalPrompts =
-          await promptCollection.countDocuments();
-
-        const totalReviews =
-          await reviewCollection.countDocuments();
-
-        const totalReports =
-          await reportCollection.countDocuments();
-
-        const totalBookmarks =
-          await bookmarkCollection.countDocuments();
-
-        const copyResult = await promptCollection
-          .aggregate([
-            {
-              $group: {
-                _id: null,
-                totalCopies: {
-                  $sum: { $ifNull: ["$copyCount", 0] },
-                },
-              },
-            },
-          ])
-          .toArray();
-
-        const totalCopies =
-          copyResult[0]?.totalCopies || 0;
-
-        res.send({
-          totalUsers,
-          totalPrompts,
-          totalReviews,
-          totalReports,
-          totalCopies,
-          totalBookmarks
-        });
-      } catch (error) {
-        console.error(error);
-        res
-          .status(500)
-          .send({ message: "Failed to fetch stats" });
-      }
-    });
-
-    app.get("/users", async (req, res) => {
-      const users = await usersCollection.find({}).toArray();
-      res.send(users);
-    });
-
-    app.patch("/users/:id/role", async (req, res) => {
-      const { id } = req.params;
-      const { role } = req.body;
-
-      const result = await usersCollection.updateOne(
-        { _id: new ObjectId(id) },
-        {
-          $set: { role },
-        }
-      );
-
-      res.send(result);
-    });
-
-    app.delete("/users/:id", async (req, res) => {
-      const { id } = req.params;
-
-      const result = await usersCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-
-      res.send(result);
-    });
-
-    app.get("/admin/prompts", async (req, res) => {
-      const prompts = await promptCollection
-        .find({})
-        .sort({ createdAt: -1 })
-        .toArray();
-
-      res.send(prompts);
-    });
-
-    app.patch("/admin/prompts/:id/status", async (req, res) => {
-      const { status, rejectionFeedback } = req.body;
-      const updateData = { status };
-      if (rejectionFeedback !== undefined) {
-        updateData.rejectionFeedback = rejectionFeedback;
-      }
-
-      const result = await promptCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        {
-          $set: updateData,
-        }
-      );
-
-      res.send(result);
-    });
-
-    app.patch("/admin/prompts/:id/featured", async (req, res) => {
-      const result = await promptCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        [
-          {
-            $set: {
-              featured: {
-                $not: "$featured",
-              },
-            },
-          },
-        ]
-      );
-
-      res.send(result);
-    });
-
-    app.get("/admin/reports", async (req, res) => {
-      try {
-        const reports = await reportCollection.find().toArray();
-
-        const enrichedReports = await Promise.all(
-          reports.map(async (report) => {
-            const prompt = await promptCollection.findOne({
-              _id: new ObjectId(report.promptId),
-            });
-
-            return {
-              ...report,
-              promptTitle: prompt?.title || "Deleted Prompt",
-              creatorEmail: prompt?.creatorEmail || "Unknown",
-            };
-          })
-        );
-
-        res.send(enrichedReports);
-      } catch (error) {
-        console.log(error);
-        res.status(500).send({
-          message: "Failed to fetch reports",
-        });
-      }
-    });
-
-    app.delete("/admin/reports/:id", async (req, res) => {
-      const result = await reportCollection.deleteOne({
-        _id: new ObjectId(req.params.id),
-      });
-
-      res.send(result);
-    });
-
-
-    app.delete("/admin/reports/prompt/:promptId", async (req, res) => {
-      const promptResult = await promptCollection.deleteOne({
-        _id: new ObjectId(req.params.promptId),
-      });
-
-      await reportCollection.deleteMany({
-        promptId: req.params.promptId,
-      });
-
-      res.send(promptResult);
-    });
-
-    // await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+  } catch (error) {
+    console.error(error);
+    res
+      .status(500)
+      .send({ message: "Failed to fetch stats" });
   }
-}
-run().catch(console.dir);
+});
+
+app.get("/users", async (req, res) => {
+  const users = await usersCollection.find({}).toArray();
+  res.send(users);
+});
+
+app.patch("/users/:id/role", async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+
+  const result = await usersCollection.updateOne(
+    { _id: new ObjectId(id) },
+    {
+      $set: { role },
+    }
+  );
+
+  res.send(result);
+});
+
+app.delete("/users/:id", async (req, res) => {
+  const { id } = req.params;
+
+  const result = await usersCollection.deleteOne({
+    _id: new ObjectId(id),
+  });
+
+  res.send(result);
+});
+
+app.get("/admin/prompts", async (req, res) => {
+  const prompts = await promptCollection
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.send(prompts);
+});
+
+app.patch("/admin/prompts/:id/status", async (req, res) => {
+  const { status, rejectionFeedback } = req.body;
+  const updateData = { status };
+  if (rejectionFeedback !== undefined) {
+    updateData.rejectionFeedback = rejectionFeedback;
+  }
+
+  const result = await promptCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    {
+      $set: updateData,
+    }
+  );
+
+  res.send(result);
+});
+
+app.patch("/admin/prompts/:id/featured", async (req, res) => {
+  const result = await promptCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    [
+      {
+        $set: {
+          featured: {
+            $not: "$featured",
+          },
+        },
+      },
+    ]
+  );
+
+  res.send(result);
+});
+
+app.get("/admin/reports", async (req, res) => {
+  try {
+    const reports = await reportCollection.find().toArray();
+
+    const enrichedReports = await Promise.all(
+      reports.map(async (report) => {
+        const prompt = await promptCollection.findOne({
+          _id: new ObjectId(report.promptId),
+        });
+
+        return {
+          ...report,
+          promptTitle: prompt?.title || "Deleted Prompt",
+          creatorEmail: prompt?.creatorEmail || "Unknown",
+        };
+      })
+    );
+
+    res.send(enrichedReports);
+  } catch (error) {
+    console.log(error);
+    res.status(500).send({
+      message: "Failed to fetch reports",
+    });
+  }
+});
+
+app.delete("/admin/reports/:id", async (req, res) => {
+  const result = await reportCollection.deleteOne({
+    _id: new ObjectId(req.params.id),
+  });
+
+  res.send(result);
+});
+
+
+
+app.delete("/admin/reports/prompt/:promptId", async (req, res) => {
+  const promptResult = await promptCollection.deleteOne({
+    _id: new ObjectId(req.params.promptId),
+  });
+
+  await reportCollection.deleteMany({
+    promptId: req.params.promptId,
+  });
+
+  res.send(promptResult);
+});
+
+// await client.db("admin").command({ ping: 1 });
+//     console.log(
+//       "Pinged your deployment. You successfully connected to MongoDB!",
+//     );
+//   } finally {
+//     // Ensures that the client will close when you finish/error
+//     // await client.close();
+//   }
+// }
+// run().catch(console.dir);
 
 app.get("/", (req, res) => {
   res.send("Server is running fine!");
@@ -939,3 +1079,4 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+module.exports = app;
