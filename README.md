@@ -112,15 +112,7 @@ Open [http://localhost:3000](http://localhost:3000) to view the application.
 * [ ] Real-time browser notifications for prompt approval and bookmark updates.
 * [ ] Advanced exports for prompts (JSON, TXT, CSV formatting).
 
----
 
-## 🤝 Contributing
-Contributions, issues, and feature requests are welcome! Feel free to open a pull request or file a ticket.
-
----
-
-## 📄 License
-This project is licensed under the **MIT License**.
 
 ---
 
