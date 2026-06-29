@@ -435,21 +435,26 @@ app.get("/top-creators", async (req, res) => {
         },
 
         {
+          $addFields: {
+            userIdStr: { $toString: "$_id" },
+          },
+        },
+
+        {
           $lookup: {
             from: "prompts",
-            let: { userIdStr: { $toString: "$_id" } },
+            let: { 
+              userIdStr: "$userIdStr", 
+              userIdObj: "$_id" 
+            },
             pipeline: [
               {
                 $match: {
                   $expr: {
                     $or: [
                       { $eq: ["$creatorId", "$$userIdStr"] },
-                      {
-                        $eq: [
-                          { $toString: { $ifNull: ["$creator", ""] } },
-                          "$$userIdStr",
-                        ],
-                      },
+                      { $eq: ["$creator", "$$userIdObj"] },
+                      { $eq: ["$creator", "$$userIdStr"] },
                     ],
                   },
                 },
