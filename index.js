@@ -50,11 +50,25 @@ const premiumCollection = db.collection("premiums");
 
 // verifyJWT middleware
 const verifyJWT = (req, res, next) => {
+  let token = null;
   const authHeader = req.headers.authorization;
-  if (!authHeader) {
+  if (authHeader) {
+    token = authHeader.split(" ")[1];
+  } else if (req.headers.cookie) {
+    const cookies = req.headers.cookie.split(";").reduce((acc, cookie) => {
+      const [key, value] = cookie.trim().split("=");
+      if (key && value) {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+    token = cookies.token;
+  }
+
+  if (!token) {
     return res.status(401).send({ message: "unauthorized access" });
   }
-  const token = authHeader.split(" ")[1];
+
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
     if (err) {
       return res.status(403).send({ message: "forbidden access" });
@@ -92,7 +106,7 @@ app.post("/jwt", async (req, res) => {
 });
 
 
-app.post('/prompts', async (req, res) => {
+app.post('/prompts', verifyJWT, async (req, res) => {
   const prompt = req.body;
 
   try {
@@ -214,7 +228,7 @@ app.get('/prompts', async (req, res) => {
   }
 });
 
-app.patch("/admin/prompts/:id/status", async (req, res) => {
+app.patch("/admin/prompts/:id/status", verifyJWT, verifyAdmin, async (req, res) => {
   try {
     console.log("ID:", req.params.id);
     console.log("BODY:", req.body);
@@ -285,7 +299,7 @@ app.delete("/prompts/:id", async (req, res) => {
 
 
 // POST — add review
-app.post("/reviews", async (req, res) => {
+app.post("/reviews", verifyJWT, async (req, res) => {
   const { promptId, name, email, rating, comment } = req.body;
 
   // prevent duplicate review from same email on same prompt
@@ -582,7 +596,7 @@ app.delete("/reviews/:id", async (req, res) => {
 app.get("/featured-prompts", async (req, res) => {
   try {
     const prompts = await promptCollection
-      .find({})
+      .find({ status: "approved" })
       .sort({ copyCount: -1 }) // trending based on copies
       .limit(6)
       .toArray();
@@ -606,7 +620,7 @@ app.patch("/prompts/copy/:id", async (req, res) => {
   res.send(result);
 });
 
-app.post("/bookmarks", async (req, res) => {
+app.post("/bookmarks", verifyJWT, async (req, res) => {
   const { userEmail, promptId } = req.body;
 
   const exists = await bookmarkCollection.findOne({
@@ -629,7 +643,7 @@ app.post("/bookmarks", async (req, res) => {
   res.send(result);
 });
 
-app.post("/reports", async (req, res) => {
+app.post("/reports", verifyJWT, async (req, res) => {
   const report = {
     ...req.body,
     reportedAt: new Date(),
@@ -643,7 +657,7 @@ app.post("/reports", async (req, res) => {
 });
 
 // Toggle Bookmark (if exists, remove. if not, add)
-app.post("/bookmarks/toggle", async (req, res) => {
+app.post("/bookmarks/toggle", verifyJWT, async (req, res) => {
   const { userEmail, promptId } = req.body;
   if (!userEmail || !promptId) {
     return res.status(400).send({ message: "Email and Prompt ID are required" });
@@ -696,7 +710,7 @@ app.get("/bookmarks/user/:email", async (req, res) => {
 });
 
 // Get Creator Analytics & Stats (aggregates prompt copies and bookmarks via $lookup)
-app.get("/creator/stats/:email", async (req, res) => {
+app.get("/creator/stats/:email", verifyJWT, verifyCreator, async (req, res) => {
   try {
     const { email } = req.params;
 
@@ -829,7 +843,7 @@ app.get("/creator/stats/:email", async (req, res) => {
 });
 
 // Warn Creator
-app.post("/admin/reports/warn-creator", async (req, res) => {
+app.post("/admin/reports/warn-creator", verifyJWT, verifyAdmin, async (req, res) => {
   try {
     const { creatorEmail, message, promptId } = req.body;
     if (!creatorEmail) {
@@ -882,7 +896,7 @@ app.get("/reviews/user/:email", async (req, res) => {
 });
 
 // Get Admin Payments List
-app.get("/admin/payments", async (req, res) => {
+app.get("/admin/payments", verifyJWT, verifyAdmin, async (req, res) => {
   try {
     const payments = await premiumCollection.find({}).sort({ createdAt: -1 }).toArray();
     res.send(payments);
@@ -892,7 +906,7 @@ app.get("/admin/payments", async (req, res) => {
   }
 });
 
-app.get("/admin/stats", async (req, res) => {
+app.get("/admin/stats", verifyJWT, verifyAdmin, async (req, res) => {
   try {
     const totalUsers = await usersCollection.countDocuments();
 
@@ -940,12 +954,12 @@ app.get("/admin/stats", async (req, res) => {
   }
 });
 
-app.get("/users", async (req, res) => {
+app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
   const users = await usersCollection.find({}).toArray();
   res.send(users);
 });
 
-app.patch("/users/:id/role", async (req, res) => {
+app.patch("/users/:id/role", verifyJWT, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const { role } = req.body;
 
@@ -959,7 +973,7 @@ app.patch("/users/:id/role", async (req, res) => {
   res.send(result);
 });
 
-app.delete("/users/:id", async (req, res) => {
+app.delete("/users/:id", verifyJWT, verifyAdmin, async (req, res) => {
   const { id } = req.params;
 
   const result = await usersCollection.deleteOne({
@@ -969,7 +983,7 @@ app.delete("/users/:id", async (req, res) => {
   res.send(result);
 });
 
-app.get("/admin/prompts", async (req, res) => {
+app.get("/admin/prompts", verifyJWT, verifyAdmin, async (req, res) => {
   const prompts = await promptCollection
     .find({})
     .sort({ createdAt: -1 })
@@ -978,24 +992,8 @@ app.get("/admin/prompts", async (req, res) => {
   res.send(prompts);
 });
 
-app.patch("/admin/prompts/:id/status", async (req, res) => {
-  const { status, rejectionFeedback } = req.body;
-  const updateData = { status };
-  if (rejectionFeedback !== undefined) {
-    updateData.rejectionFeedback = rejectionFeedback;
-  }
-
-  const result = await promptCollection.updateOne(
-    { _id: new ObjectId(req.params.id) },
-    {
-      $set: updateData,
-    }
-  );
-
-  res.send(result);
-});
-
-app.patch("/admin/prompts/:id/featured", async (req, res) => {
+// Duplicate app.patch("/admin/prompts/:id/status") removed.
+app.patch("/admin/prompts/:id/featured", verifyJWT, verifyAdmin, async (req, res) => {
   const result = await promptCollection.updateOne(
     { _id: new ObjectId(req.params.id) },
     [
@@ -1012,7 +1010,7 @@ app.patch("/admin/prompts/:id/featured", async (req, res) => {
   res.send(result);
 });
 
-app.get("/admin/reports", async (req, res) => {
+app.get("/admin/reports", verifyJWT, verifyAdmin, async (req, res) => {
   try {
     const reports = await reportCollection.find().toArray();
 
@@ -1039,7 +1037,7 @@ app.get("/admin/reports", async (req, res) => {
   }
 });
 
-app.delete("/admin/reports/:id", async (req, res) => {
+app.delete("/admin/reports/:id", verifyJWT, verifyAdmin, async (req, res) => {
   const result = await reportCollection.deleteOne({
     _id: new ObjectId(req.params.id),
   });
@@ -1049,7 +1047,7 @@ app.delete("/admin/reports/:id", async (req, res) => {
 
 
 
-app.delete("/admin/reports/prompt/:promptId", async (req, res) => {
+app.delete("/admin/reports/prompt/:promptId", verifyJWT, verifyAdmin, async (req, res) => {
   const promptResult = await promptCollection.deleteOne({
     _id: new ObjectId(req.params.promptId),
   });
